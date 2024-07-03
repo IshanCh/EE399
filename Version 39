@@ -1,0 +1,80 @@
+using LinearAlgebra
+using Random
+using Graphs
+
+function distributed_admm(N, k, seed=123)
+    Random.seed!(seed)  # Set the random number generator seed for reproducibility.
+    A = hcat(ones(N), rand(N), rand(N).^2, rand(N).^3)  # Create a matrix A where each row corresponds to a data point
+    b = rand(N)  # Create a vector b representing the output values for each data point.
+    x = zeros(4, N, k + 1)  # x matrix: 4 variables (Variable Estimates), N nodes, k + 1 iterations
+    
+    # Calculate the global solution global_x
+    global_x = A \ b
+    println("Global solution (global_x): ", global_x)
+    
+    # Creating a graph with N nodes
+    g = SimpleDiGraph(N)
+    
+    # Add edges to the graph; directed edges between nodes; Lines 27-29 commented out to prevent redundancy
+    edge_index = 1
+    edge_map = Dict{Edge{Int}, Int}()
+    for i in 1:N
+        for j in 1:N
+            if i != j
+                add_edge!(g, i, j)
+                edge_map[Edge(i, j)] = edge_index
+                edge_index += 1
+                # add_edge!(g, j, i)
+                # edge_map[Edge(j, i)] = edge_index
+                # edge_index += 1
+            end
+        end
+    end
+
+    # Determine the number of edges
+    M = ne(g)
+    z = zeros(4, 2M, k + 1) # z matrix: 4 variables (auxiliary variable estimates for each edge), M edges, k + 1 iterations
+    ρ = .1 # R-ADMM penalty parameter ρ (rho); controls the weight of the augmented Lagrangian term that enforces the constraint Ax + Bz = C
+    α = .1 # R-ADMM relaxation parameter α (alpha); adjusts the update of the dual variable
+
+    for iteration in 1:k # Main loop to iterate the ADMM algorithm for a specified number of iterations.
+        for i in 1:N # Update x for each node in the network.
+            A_i = reshape(A[i, :], 1, 4)  # A_i = A[i, :] --> this returns list (4,) not a matrix 
+            b_i = b[i]
+            
+            # Summing z over neighbors
+            sum_z = zeros(4)
+            for j in outneighbors(g, i)
+                edge = Edge(i, j)
+                sum_z += z[:, edge_map[edge], iteration]
+            end
+            
+            x_i_next = (A_i' * A_i + ρ * indegree(g, i) * I) \ (A_i' * b_i .+ ρ * sum_z)  # Equation 13a, added indegree(g, i)
+            x[:, i, iteration + 1] .= x_i_next
+        end
+
+        for e in edges(g)
+            i = src(e)
+            j = dst(e)
+
+            edge_index = edge_map[e]
+            reciprocal_edge = Edge(j, i)
+            reciprocal_edge_index = edge_map[reciprocal_edge]
+
+            q = -z[:, reciprocal_edge_index, iteration] + 2ρ * x[:, j, iteration + 1]
+            z[:, edge_index, iteration + 1] = (1 - α) * z[:, edge_index, iteration] + α * q  # Equation 15
+        end
+        
+        # Print each node's values after this iteration
+        println("Iteration $iteration:")
+        for i in 1:N
+            println("Node $i: ", x[:, i, iteration])
+        end
+    end
+    println("ADMM algorithm completed.")
+    return x, z
+end
+
+N = 5  # Nodes
+k = 1000  # Iterations
+x_values, _ = distributed_admm(N, k)
